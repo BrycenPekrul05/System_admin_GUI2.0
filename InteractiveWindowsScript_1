@@ -203,30 +203,48 @@ def add_user(username, password):
         return f"Failed to create user '{username}'. Error: {e}"
 
 def get_service_names():
-    services_list = []
-    powershell_script = f"(Get-Service).Name"
-
+    powershell_script =  f"Get-CimInstance -ClassName Win32_Service | Select-Object Name, DisplayName, State, StartMode | ConvertTo-Json"
+    
     results = subprocess.run(
         ["powershell", "-Command", powershell_script],
         capture_output=True,
         text=True
-
     )
 
-    for service in results.stdout.strip().splitlines():
-        services_list.append(service)
+    data = json.loads(results.stdout)
+   
+    return data if isinstance(data, list) else [data]
 
-    return services_list
+def filtered_services(start_type, status):
+    powershell_script = f"""
+    $start_type = "{start_type}"
+    $status = "{status}"
 
+    Get-CimInstance -ClassName Win32_Service | 
+        Where-Object {{
+            ($start_type -eq "All" -or $_.StartMode -eq $start_type) -and
+            ($status -eq "All" -or $_.State -eq $status)
+        }} | 
+        ConvertTo-Json
+        
 
+    """
+    
+    results = subprocess.run(
+        ["powershell", "-Command", powershell_script],
+        capture_output=True,
+        text=True
+    )
 
+    data = json.loads(results.stdout)
+   
+    return data if isinstance(data, list) else [data]
 
-
-
-"""
 def set_local_security_policies():
+    results = []
+
     policy_types = {
-        "policies" = [
+        "password_policies": [
             # Account Lockout Policies 
             "lockoutthreshold:5",
             "lockoutduration:30",
@@ -239,33 +257,635 @@ def set_local_security_policies():
             "uniquepw:3",
         ],
         
-        "audit_policies" = [
+        "audit_policies": [
             "Account Logon",
-            "System Events",
             "Logon/Logoff",
             "Object Access",
             "Privilege Use",
             "Detailed Tracking",
             "Policy Change",
-            "Account Management",
-            "Directory Service Access",
+            "Account Management"
+            
         ]
     }
-"""
+
+    for policy in policy_types["password_policies"]:
+        powershell_script = f"""net accounts /{policy}"""
+
+        result = subprocess.run(
+            ["powershell", "-Command", powershell_script],
+            capture_output=True,
+            text=True
+        )
+                
+        results.append(result.stdout.strip())
+
+    for policy in policy_types["audit_policies"]:
+        powershell_script = f"""auditpol /set /category:"{policy}" /success:enable /failure:enable"""
+
+        result = subprocess.run(
+            ["powershell", "-Command", powershell_script],
+            capture_output=True,
+            text=True
+        )
+        
+        results.append(policy + result.stdout.strip())
+
+    return results
+      
+
+                
+import os 
+import subprocess
+import json
+import hashlib
 
 """
+
+these functions are used for file searching within the system
+
+"""
+
+#Searches a given directory for a given type of file / files
+def searchDirectory(rootDirectory, fileTypes):
+    foundFiles = []
+
+    # Check if directory exists
+    if not os.path.exists(rootDirectory):
+        return(f"Directory does not exist.")
+
+    fileTypesList = [ft.strip().lower() for ft in fileTypes.split(",")]
+
+    try:
+        for root, dirs, files in os.walk(rootDirectory):
+            for file in files:
+                # Get the file extension in lower case
+                _, ext = os.path.splitext(file)
+                ext = ext.lower()
+
+                # Check if extension matches any in the list
+                if ext in fileTypesList:
+                    foundFiles.append(os.path.join(root, file))
+
+    except Exception as e:
+        return f"Error with file type searching: {e}"
+
+    return foundFiles 
+        
+#Searches for files with a keyword in the name of said file    
+def keywordSearchExternal (rootDirectory, keyword):
+    trueFiles = []
+
+    #Checks if Directory exixts
+    if not os.path.exists(rootDirectory):
+        return(f"Directory does not exist.")
     
-    for policy in audit_policies:
-        powershell_command = f'auditpol /set /category:"{policy}" /success:enable /failure:enable'
+    #Searches for files w/ key word
+    for root, dirs, files in os.walk(rootDirectory):
+        for file in files: 
+            if keyword in file:
+                trueFiles.append(os.path.join(root,file))
 
-        subprocess.run(
+    #Outputs found files
+    return trueFiles
+
+#Searches inside files for a specific key word
+def keywordSearchInternal (rootDirectory, keyword): 
+    trueFiles = []
+    errorFiles = []
+
+    #Checks if Directory Exists 
+    if not os.path.exists(rootDirectory):  
+        return(f"Directory does not exist.")
+    
+    #Searches for files w/ key word
+    for root, dirs, files in os.walk(rootDirectory):
+        for file in files:
+            filePath = os.path.join(root, file)
+            try:
+                with open(filePath, "r", encoding="utf-8") as file:
+                    for lineNumber, line in enumerate(file, start=1):
+                        if keyword in line:
+                            trueFiles.append(filePath)
+
+            except Exception as e:
+                errorFiles.append(filePath)
+
+    #Outputs found files
+    return trueFiles
+
+"""
+functions related to user sorting and organization
+"""
+# get and sort all users on a system
+def get_local_users():
+    powershell_script = r"""
+    $allUsers = Get-LocalUser
+
+    $adminUsernames = Get-LocalGroupMember -Group "Administrators" | Where-Object {
+        $_.ObjectClass -eq 'User'
+
+    } | ForEach-Object {
+        ($_.Name -split '\\')[-1].ToLower()
+
+    }
+
+    $admins = @()
+    $nonAdmins = @()
+
+    foreach ($user in $allUsers) {
+        if ($adminUsernames -contains $user.Name.ToLower()) {
+            $admins += $user.Name
+
+        } else {
+            $nonAdmins += $user.Name
+
+        }
+    }
+
+    Write-Output "ADMINS:"
+    $admins
+    Write-Output "NONADMINS:"
+    $nonAdmins
+
+    """
+
+    result = subprocess.run(
+        ["powershell", "-Command", powershell_script],
+        capture_output=True,
+        text=True
+
+    )
+
+    if result.returncode != 0:
+        print("PowerShell error:", result.stderr)
+        return [], []  # Avoid returning None
+
+    lines = result.stdout.strip().splitlines()
+
+    admins = []
+    non_admins = []
+    current = None
+
+    for line in lines:
+        line = line.strip()
+
+        if line == "ADMINS:":
+            current = "admins"
+            continue
+
+        elif line == "NONADMINS:":
+            current = "non_admins"
+            continue
+
+        if current == "admins":
+            admins.append(line)
+    
+        elif current == "non_admins":
+            non_admins.append(line)
+
+    return admins, non_admins
+
+# remove a user based off of name (DOES NOT SAVE FILES)
+def remove_user(username):
+    powershell_command = f"""
+        $username = '{username}'
+
+        if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {{
+            try {{
+                Remove-LocalUser -Name $username
+                Write-Output "User '$username' deleted successfully."
+
+            }} catch {{
+                Write-Output "Error deleting user '$username': $($_.Exception.Message)"
+
+            }}
+
+        }} else {{
+            Write-Output "User '$username' not found."
+
+        }}
+        
+    """
+
+    result = subprocess.run(
+        ["powershell", "-Command", powershell_command],
+        capture_output=True,
+        text=True
+
+    )
+
+    return result.stdout.strip()
+
+# add a user using a name and password (Faster than using Control Panel)
+def add_user(username, password):
+    powershell_command = f"""
+        $username = '{username}'
+        $password = '{password}'
+
+        New-LocalUser -Name $username -Password (ConvertTo-SecureString $password -AsPlainText -Force)
+
+    """
+    try:
+        result = subprocess.run(
             ["powershell", "-Command", powershell_command],
-            capture_output=True, 
+            capture_output=True,
             text=True
 
         )
 
-    for policy in policies:
-        ...
+        return f"User '{username}' created seccessfully."
+
+    except subprocess.CalledProcessError as e:
+        return f"Failed to create user '{username}'. Error: {e}"
+
+def get_service_names():
+    powershell_script =  f"Get-CimInstance -ClassName Win32_Service | Select-Object Name, DisplayName, State, StartMode | ConvertTo-Json"
+    
+    results = subprocess.run(
+        ["powershell", "-Command", powershell_script],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(results.stdout)
+   
+    return data if isinstance(data, list) else [data]
+
+def filtered_services(start_type, status):
+    powershell_script = f"""
+    $start_type = "{start_type}"
+    $status = "{status}"
+
+    Get-CimInstance -ClassName Win32_Service | 
+        Where-Object {{
+            ($start_type -eq "All" -or $_.StartMode -eq $start_type) -and
+            ($status -eq "All" -or $_.State -eq $status)
+        }} | 
+        ConvertTo-Json
+        
+
+    """
+    
+    results = subprocess.run(
+        ["powershell", "-Command", powershell_script],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(results.stdout)
+   
+    return data if isinstance(data, list) else [data]
+
+def set_local_security_policies():
+    results = []
+
+    policy_types = {
+        "password_policies": [
+            # Account Lockout Policies 
+            "lockoutthreshold:5",
+            "lockoutduration:30",
+            "lockoutwindow:10",
+
+            # Password Policies
+            "minpwlen:8",
+            "maxpwage:30",
+            "minpwage:30",
+            "uniquepw:3",
+        ],
+        
+        "audit_policies": [
+            "Account Logon",
+            "Logon/Logoff",
+            "Object Access",
+            "Privilege Use",
+            "Detailed Tracking",
+            "Policy Change",
+            "Account Management"
+            
+        ]
+    }
+
+    for policy in policy_types["password_policies"]:
+        powershell_script = f"""net accounts /{policy}"""
+
+        result = subprocess.run(
+            ["powershell", "-Command", powershell_script],
+            capture_output=True,
+            text=True
+        )
+                
+        results.append(result.stdout.strip())
+
+    for policy in policy_types["audit_policies"]:
+        powershell_script = f"""auditpol /set /category:"{policy}" /success:enable /failure:enable"""
+
+        result = subprocess.run(
+            ["powershell", "-Command", powershell_script],
+            capture_output=True,
+            text=True
+        )
+        
+        results.append(policy + result.stdout.strip())
+
+    return results
+      
+
+                
+import os 
+import subprocess
+import json
+import hashlib
 
 """
+
+these functions are used for file searching within the system
+
+"""
+
+#Searches a given directory for a given type of file / files
+def searchDirectory(rootDirectory, fileTypes):
+    foundFiles = []
+
+    # Check if directory exists
+    if not os.path.exists(rootDirectory):
+        return(f"Directory does not exist.")
+
+    fileTypesList = [ft.strip().lower() for ft in fileTypes.split(",")]
+
+    try:
+        for root, dirs, files in os.walk(rootDirectory):
+            for file in files:
+                # Get the file extension in lower case
+                _, ext = os.path.splitext(file)
+                ext = ext.lower()
+
+                # Check if extension matches any in the list
+                if ext in fileTypesList:
+                    foundFiles.append(os.path.join(root, file))
+
+    except Exception as e:
+        return f"Error with file type searching: {e}"
+
+    return foundFiles 
+        
+#Searches for files with a keyword in the name of said file    
+def keywordSearchExternal (rootDirectory, keyword):
+    trueFiles = []
+
+    #Checks if Directory exixts
+    if not os.path.exists(rootDirectory):
+        return(f"Directory does not exist.")
+    
+    #Searches for files w/ key word
+    for root, dirs, files in os.walk(rootDirectory):
+        for file in files: 
+            if keyword in file:
+                trueFiles.append(os.path.join(root,file))
+
+    #Outputs found files
+    return trueFiles
+
+#Searches inside files for a specific key word
+def keywordSearchInternal (rootDirectory, keyword): 
+    trueFiles = []
+    errorFiles = []
+
+    #Checks if Directory Exists 
+    if not os.path.exists(rootDirectory):  
+        return(f"Directory does not exist.")
+    
+    #Searches for files w/ key word
+    for root, dirs, files in os.walk(rootDirectory):
+        for file in files:
+            filePath = os.path.join(root, file)
+            try:
+                with open(filePath, "r", encoding="utf-8") as file:
+                    for lineNumber, line in enumerate(file, start=1):
+                        if keyword in line:
+                            trueFiles.append(filePath)
+
+            except Exception as e:
+                errorFiles.append(filePath)
+
+    #Outputs found files
+    return trueFiles
+
+"""
+functions related to user sorting and organization
+"""
+# get and sort all users on a system
+def get_local_users():
+    powershell_script = r"""
+    $allUsers = Get-LocalUser
+
+    $adminUsernames = Get-LocalGroupMember -Group "Administrators" | Where-Object {
+        $_.ObjectClass -eq 'User'
+
+    } | ForEach-Object {
+        ($_.Name -split '\\')[-1].ToLower()
+
+    }
+
+    $admins = @()
+    $nonAdmins = @()
+
+    foreach ($user in $allUsers) {
+        if ($adminUsernames -contains $user.Name.ToLower()) {
+            $admins += $user.Name
+
+        } else {
+            $nonAdmins += $user.Name
+
+        }
+    }
+
+    Write-Output "ADMINS:"
+    $admins
+    Write-Output "NONADMINS:"
+    $nonAdmins
+
+    """
+
+    result = subprocess.run(
+        ["powershell", "-Command", powershell_script],
+        capture_output=True,
+        text=True
+
+    )
+
+    if result.returncode != 0:
+        print("PowerShell error:", result.stderr)
+        return [], []  # Avoid returning None
+
+    lines = result.stdout.strip().splitlines()
+
+    admins = []
+    non_admins = []
+    current = None
+
+    for line in lines:
+        line = line.strip()
+
+        if line == "ADMINS:":
+            current = "admins"
+            continue
+
+        elif line == "NONADMINS:":
+            current = "non_admins"
+            continue
+
+        if current == "admins":
+            admins.append(line)
+    
+        elif current == "non_admins":
+            non_admins.append(line)
+
+    return admins, non_admins
+
+# remove a user based off of name (DOES NOT SAVE FILES)
+def remove_user(username):
+    powershell_command = f"""
+        $username = '{username}'
+
+        if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {{
+            try {{
+                Remove-LocalUser -Name $username
+                Write-Output "User '$username' deleted successfully."
+
+            }} catch {{
+                Write-Output "Error deleting user '$username': $($_.Exception.Message)"
+
+            }}
+
+        }} else {{
+            Write-Output "User '$username' not found."
+
+        }}
+        
+    """
+
+    result = subprocess.run(
+        ["powershell", "-Command", powershell_command],
+        capture_output=True,
+        text=True
+
+    )
+
+    return result.stdout.strip()
+
+# add a user using a name and password (Faster than using Control Panel)
+def add_user(username, password):
+    powershell_command = f"""
+        $username = '{username}'
+        $password = '{password}'
+
+        New-LocalUser -Name $username -Password (ConvertTo-SecureString $password -AsPlainText -Force)
+
+    """
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command", powershell_command],
+            capture_output=True,
+            text=True
+
+        )
+
+        return f"User '{username}' created seccessfully."
+
+    except subprocess.CalledProcessError as e:
+        return f"Failed to create user '{username}'. Error: {e}"
+
+def get_service_names():
+    powershell_script =  f"Get-CimInstance -ClassName Win32_Service | Select-Object Name, DisplayName, State, StartMode | ConvertTo-Json"
+    
+    results = subprocess.run(
+        ["powershell", "-Command", powershell_script],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(results.stdout)
+   
+    return data if isinstance(data, list) else [data]
+
+def filtered_services(start_type, status):
+    powershell_script = f"""
+    $start_type = "{start_type}"
+    $status = "{status}"
+
+    Get-CimInstance -ClassName Win32_Service | 
+        Where-Object {{
+            ($start_type -eq "All" -or $_.StartMode -eq $start_type) -and
+            ($status -eq "All" -or $_.State -eq $status)
+        }} | 
+        ConvertTo-Json
+        
+
+    """
+    
+    results = subprocess.run(
+        ["powershell", "-Command", powershell_script],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(results.stdout)
+   
+    return data if isinstance(data, list) else [data]
+
+def set_local_security_policies():
+    results = []
+
+    policy_types = {
+        "password_policies": [
+            # Account Lockout Policies 
+            "lockoutthreshold:5",
+            "lockoutduration:30",
+            "lockoutwindow:10",
+
+            # Password Policies
+            "minpwlen:8",
+            "maxpwage:30",
+            "minpwage:30",
+            "uniquepw:3",
+        ],
+        
+        "audit_policies": [
+            "Account Logon",
+            "Logon/Logoff",
+            "Object Access",
+            "Privilege Use",
+            "Detailed Tracking",
+            "Policy Change",
+            "Account Management"
+            
+        ]
+    }
+
+    for policy in policy_types["password_policies"]:
+        powershell_script = f"""net accounts /{policy}"""
+
+        result = subprocess.run(
+            ["powershell", "-Command", powershell_script],
+            capture_output=True,
+            text=True
+        )
+                
+        results.append(result.stdout.strip())
+
+    for policy in policy_types["audit_policies"]:
+        powershell_script = f"""auditpol /set /category:"{policy}" /success:enable /failure:enable"""
+
+        result = subprocess.run(
+            ["powershell", "-Command", powershell_script],
+            capture_output=True,
+            text=True
+        )
+        
+        results.append(policy + result.stdout.strip())
+
+    return results
+      
+
+                
