@@ -40,7 +40,7 @@ def clear_widgets():
 
 main_window = Tk()
 main_window.title("---Interactive Windows Tool---")
-main_window.geometry("1000x800")
+main_window.geometry("1200x1200")
 
 main_window.columnconfigure(0, weight=1)
 main_window.columnconfigure(1, weight=1)
@@ -60,18 +60,37 @@ def test_screen():
     test.setup_widgets()
 
 """ Screen for service configuration """
-def services_config_screen():
+def services_config_screen(): 
+    def filter_service_search():
+        status = services_config_widgets.all_combos["status_combo"].get()
+        start_type = services_config_widgets.all_combos["start_type_combo"].get()
+        
+        results = filtered_services(start_type, status)
+
+        services_config_widgets.add_results_treeview(results)
+
     def clear_result_box():
         services_config_widgets.result_box.delete("1.0", END)
 
+    def add_services():
+        services = get_service_names()
+        services_config_widgets.add_results_treeview(services)
+
     widget_commands = {
         "back": home_screen,
-        "clear_results": clear_result_box
-        
+        "clear_results": clear_result_box,
+        "services": add_services,
+        "headings": ["Name", "DisplayName", "State", "StartMode"],
+        # Used for filtering services
+        "combo_options1": ["All", "Auto", "Manual"], # Start type for services
+        "combo_options2": ["All", "Running", "Stopped"], # Status of service
+        "filter_search": filter_service_search
+
     }
 
     services_config_widgets = reused_widgets(main_window, "service_config", widget_commands)
     services_config_widgets.setup_widgets()
+    
 
 """ Screen for user configuration """
 def user_config_screen():
@@ -123,6 +142,7 @@ def user_config_screen():
     user_config_widgets = reused_widgets(main_window, "user_config", widget_commands)
     user_config_widgets.setup_widgets()
 
+
 """ Screen for all of the file searching capabilities """
 def file_searching_screen():
     def clear_result_box():
@@ -165,8 +185,12 @@ def file_searching_screen():
     file_searching_widgets = reused_widgets(main_window, "file", widget_commands)
     file_searching_widgets.setup_widgets()
 
+
 """ Screen to give assistance on how to use each part of the script """
 def help_screen():
+    def clear_results_box():
+        help_screen_widgets.result_box.delete("1.0", END)
+
     def get_help():
         info_needed = help_screen_widgets.combo.get()
         try:
@@ -179,6 +203,7 @@ def help_screen():
     widget_commands = {
         "back": home_screen,
         "search": get_help,
+        "clear_results": clear_results_box,
         "combo_options": ["File Searching", "User Configuration", "3"]
 
     }
@@ -192,6 +217,7 @@ def help_screen():
     help_screen_widgets.setup_widgets()
     """ Adds the intro to the help screen to the result box """
     help_screen_widgets.add_results_result_box(help_screen_data["intro"])
+
 
 """ Creates the home screen """
 def home_screen():
@@ -207,14 +233,15 @@ def home_screen():
     home_screen_widgets = reused_widgets(main_window, "home_screen", widget_commands=widget_commands)
     home_screen_widgets.setup_widgets()
 
-""" Class for all widgets used in GUI """
 
+""" Class for all widgets used in GUI """
 class reused_widgets:
     def __init__(self, window, type, widget_commands):
         self.type = type
         self.widget_commands = widget_commands 
         self.window = window
         self.entrys = {}
+        self.all_combos = {}
 
         """ Widget configurations for each screen """
         """
@@ -223,15 +250,15 @@ class reused_widgets:
         text = text on widget
         position = position of widget (left, center, right)
         position1 = row number, if wanted
-        command = command for widgets like buttons
+        command = command for widgets like buttons but also used for lists of info that need to be displayed like headings and combo options for combo_box
         """
         self.widget_configs = {
             "help": [
                 {"type": "button", "text": "Home Screen", "position": "center", "command": self.widget_commands.get("back")},
                 {"type": "combo", "options": self.widget_commands.get("combo_options")},
                 {"type": "button", "text": "Show Results", "position": "center", "command": self.widget_commands.get("search")}, 
-                {"type": "result"}
-
+                {"type": "result"},
+                {"type": "button", "text": "Clear Results Box", "command": self.widget_commands.get("clear_results")}
             ],
             "file": [
                 {"type": "title", "text": "File Searching"},
@@ -266,7 +293,13 @@ class reused_widgets:
             "service_config": [
                 {"type": "title", "text": "Service Configuration"},
                 {"type": "button", "text": "Home Screen", "position": "center", "command": self.widget_commands.get("back")},
-                {"type": "treeview", "headings": ["1", "2", "3"]}
+                {"type": "button", "text": "Get Services", "position": "center", "command": self.widget_commands.get("services")},
+                {"type": "label", "text": "Start Type: ", "position": "left", "position1": 7},
+                {"type": "combo", "combo_name": "start_type_combo", "position": "right", "options": self.widget_commands.get("combo_options1")},
+                {"type": "label", "text": "Status: ", "position": "left", "position1": 9},
+                {"type": "combo", "combo_name": "status_combo", "position": "right", "options": self.widget_commands.get("combo_options2")},
+                {"type": "button", "text": "Filter Search", "command": self.widget_commands.get("filter_search")},
+                {"type": "treeview", "headings": self.widget_commands.get("headings")}
                 
             ],
             "home_screen": [
@@ -299,11 +332,21 @@ class reused_widgets:
             """ Creates a label """
             if true_type == "label":
                 label = ttk.Label(self.window, text=config["text"])
-                label.grid(row=row_index, column=0, padx=10, pady=5)
+
+                if config.get("position") == "left":
+                    if config.get("position1"):
+                        label.grid(row=config.get("position1"), column=0, padx=10, pady=5)
+
+                    else: 
+                        label.grid(row=row_index, column=0, padx=10, pady=5)
+
+                else:
+                    label.grid(row=row_index, column=0, padx=10, pady=5)
+
                 widgets.append(label)
                 
                 """ Creates a text box that can be typed in, only allowed when a label is placed. Label is needed for a description of what the text box is used for """
-                if config["type2"] == "entry":
+                if config.get("type2") == "entry":
                     entry = ttk.Entry(self.window)
                     entry.grid(row=row_index, column=1, padx=10, pady=5)
                     widgets.append(entry)
@@ -311,7 +354,8 @@ class reused_widgets:
                     self.entrys[config["entry_name"]] = entry
 
                 row_index += 1
-            
+
+                
             """ Creates a button """
             if true_type == "button":
                 button = ttk.Button(self.window, text=config["text"], command=config["command"])
@@ -335,16 +379,28 @@ class reused_widgets:
 
                 widgets.append(button)
                 row_index += 1
+
             """ Creates a drop down menu, only one selection is allowed """
-            #expand the self.widget_configs with a parameter to allow multiple selections if needed
             if true_type == "combo":
                 options = config["options"]
-
+                
                 self.combo = ttk.Combobox(self.window, values=options)
                 self.combo.current(0)
-                self.combo.grid(row=row_index, column=0, columnspan=2)
+
+                if config.get("position") == "right":
+                    self.combo.grid(row=row_index, column=1)
+
+                elif config.get("position") == "left": 
+                    self.combo.grid(row=row_index, column=0)
+
+                else:
+                    self.combo.grid(row=row_index, column=0, columnspan=2)
                 
                 widgets.append(self.combo)
+                
+                combo_name = config.get("combo_name", f"combo_{row_index}")
+                self.all_combos[combo_name] = self.combo
+
                 row_index += 1
 
             """ Creates a result box to display results """
@@ -355,14 +411,18 @@ class reused_widgets:
                 widgets.append(self.result_box)
                 row_index += 1
 
+            """ Creates a text box similar to the result box but it allows for info to be put into a spreadsheet """
             if true_type == "treeview":
-                self.treeview = ttk.Treeview(self.window, columns=config.get("headings"), show="headings")
-                self.treeview.grid(row=row_index, column=0, columnspan=2, padx=10, pady=5)
-                
-                for heading in config.get("headings"):
-                    self.treeview.heading(heading, text=heading)
+                headings = config.get("headings")
 
+                self.treeview = ttk.Treeview(self.window, columns=headings, show="headings", height=45)
+                self.treeview.grid(row=row_index, column=0, columnspan=2, padx=10, pady=5)
+
+                for heading in headings:
+                    self.treeview.heading(column=heading, text=heading)
+                
                 widgets.append(self.treeview)
+
 
     """ Allows results to be added to the result box """
     def add_results_result_box(self, message):
@@ -373,12 +433,25 @@ class reused_widgets:
         else:
             self.result_box.insert(END, "\n" + message)
 
+
     def add_results_treeview(self, message):
-        if isinstance(message, dict):
+        """ Get headings """
+        headings = self.widget_commands.get("headings")
+
+        """ Clear the Treeview """
+        for item in self.treeview.get_children():
+            self.treeview.delete(item)
+
+        """ Write info into Treeview """
+        if isinstance(message, list):
             for item in message:
+                values = tuple(item.get(heading) for heading in headings)
                 self.treeview.insert(
+                    "", "end",
+                    values=values
                     
-                )
+                    )
+        
 
     def get_entry(self, entry_name):
         entry = self.entrys.get(entry_name)
@@ -388,7 +461,7 @@ class reused_widgets:
         
         else:
             return None
-        
+
 
 home_screen()
 
